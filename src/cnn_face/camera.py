@@ -39,7 +39,7 @@ def run_stream(
         if not capture.isOpened():
             raise RuntimeError(f"无法打开{description}，请检查输入或设备占用。")
 
-        # 识别任务尚未合并时仍可导入本模块，且每次播放只解析一次接口。
+        # 每次播放只解析一次真实识别接口，逐帧复用已初始化的引擎。
         try:
             from cnn_face.recognition import recognize
         except ImportError as error:
@@ -117,8 +117,8 @@ def run_stream(
             image = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
             if result.bbox is not None:
                 x, y, width, height = result.bbox
-                right = min(x + width, image.width - 1)
-                bottom = min(y + height, image.height - 1)
+                right = min(x + width - 1, image.width - 1)
+                bottom = min(y + height - 1, image.height - 1)
                 if x <= right and y <= bottom:
                     ImageDraw.Draw(image).rectangle(
                         (x, y, right, bottom), outline=color, width=2,
