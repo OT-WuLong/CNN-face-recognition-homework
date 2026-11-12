@@ -1,8 +1,12 @@
-# 技术与接口设计
+# 技术说明
 
-状态：共享基线已实现 `contracts.py`、`engine.py` 和 `doctor` 命令，当前开发机已通过 CPU/CUDA 图片推理。注册、识别与视频接口仍是后续任务约定；接口变化先修改本文，再同步相关任务。
+操作步骤见 [使用指南](USAGE.md)，验证结果见 [测试与验收](VALIDATION.md)。实现主链路已完成，后续维护以代码和本文中的约定为准。
 
-## 识别流程
+## 功能范围
+
+系统面向一个已登记身份，处理单人画面。支持多张本人照片注册、单张图片识别、本地视频及摄像头展示。
+
+注册保存预训练 CNN 提取的特征，不更新模型权重。单脸查询与注册库比对；无脸、多脸分别返回独立状态，多脸画面不执行身份判定。多身份管理、多人同时识别、活体检测、训练与微调不属于当前交付范围。
 
 ```text
 注册照片 → 检测与对齐 → 预训练 CNN → 本人特征库
@@ -10,164 +14,71 @@
 图片或视频帧 → 相同特征提取流程 → 距离比对 → 昵称 / 未知
 ```
 
-无脸和多脸在识别流程中返回独立状态。读取失败、库损坏和模型故障属于运行错误，不转换为“未知”。
+## 固定的模型配置
 
-DeepFace 提供特征提取能力；本项目维护注册库、匹配规则、命令行和视频展示。第一版使用简单 JSON 文件保存少量特征，不引入数据库或额外服务。
+| 配置 | 当前值 |
+| --- | --- |
+| 特征模型 | `Facenet512`，输出 512 维 |
+| 推理后端 | PyTorch，支持 CPU 和兼容的 CUDA 环境 |
+| 检测器 / 对齐 | `opencv` / 开启 |
+| 输入归一化 | `base` |
+| 比对方式 | 余弦距离 |
+| 视频读取 / 展示 | headless OpenCV / Tkinter 与 Pillow |
 
-## 技术选择与待验证事项
+依赖以 [pyproject.toml](../pyproject.toml) 和 [环境锁定文件](../requirements-win-cu124.lock) 为准。CPU ONNX Runtime 保留为 DeepFace 发布依赖，当前 CNN 在 PyTorch 后端执行。
 
-| 项目 | 当前设计 | 确定方式 |
+引擎固定校验官方 `facenet512_weights.pth` 的 SHA-256。更换模型、权重或特征处理方式时，应更新共享配置、重新注册并重新校准阈值；跨引擎复用特征需先验证一致性。
+
+## 模块与接口
+
+| 模块 | 主要职责与公共入口 |
+| --- | --- |
+| [contracts.py](../src/cnn_face/contracts.py) | `PipelineConfig`、`FaceEmbedding`、`Gallery`、`RecognitionResult` 及公共校验 |
+| [engine.py](../src/cnn_face/engine.py) | `configure_runtime(device)`、`read_image(path)`、`extract_embeddings(frame_bgr, *, pipeline)` |
+| [enrollment.py](../src/cnn_face/enrollment.py) | `enroll(identity, images_dir, gallery_path, *, pipeline)`、`load_gallery(gallery_path)` |
+| [recognition.py](../src/cnn_face/recognition.py) | `recognize(frame_bgr, gallery, *, threshold)` |
+| [camera.py](../src/cnn_face/camera.py) | `run_stream(source, gallery, *, threshold)`，整数源为摄像头，`Path` 为视频 |
+| [__main__.py](../src/cnn_face/__main__.py) | 参数解析、统一初始化模型、串联业务模块及错误退出 |
+
+入口每个进程调用一次 `configure_runtime`，选择设备、加载模型并预热。各模块复用引擎及共享类型，不自行复制定义或重复加载模型。
+
+图像统一为非空的 `uint8`、`H×W×3` BGR 数组；显示副本转为 RGB。人脸框采用原始帧坐标 `(x, y, w, h)`，缩放或镜像展示时同步转换坐标。
+
+## 特征库与状态约定
+
+- 注册库是 UTF-8 JSON，字段为 `schema_version`、`identity`、`pipeline`、`embedding_dim`、`embeddings`；版本为 `1`，字段类型以 `Gallery` 定义为准。
+- 注册目录只扫描第一层受支持的图片，按文件名排序，每张图片恰好一张脸。全部成功后，使用同目录临时文件与原子替换保存；重新注册整体替换，失败保留旧库。
+- 加载时拒绝缺失或额外字段、重复 JSON 键、错误版本或配置、空向量、零向量、非有限数值及不一致维数。
+- 读取失败、库损坏和模型故障通过异常报告，不能伪装成未知身份。
+
+| 状态 | 含义 | 返回约定 |
 | --- | --- | --- |
-| Python | 优先使用现有 Python 3.12 | 在两台电脑分别验证依赖 |
-| 特征模型 | 固定 `Facenet512`，输出 512 维 | 当前 CPU/CUDA 推理已验证，权重摘要由引擎校验 |
-| 检测与对齐 | 固定 `opencv`，开启对齐 | 真实样本检测已验证，本人样本待采集 |
-| 输入归一化 | 固定 `base`，交由 DeepFace 执行 | 注册与查询使用同一配置 |
-| 推理引擎 | 固定 PyTorch 2.6.0 / CUDA 12.4 构建 | CPU/CUDA 均已实际运行 |
-| 距离 | 固定余弦距离，数值越小越相似 | 匹配模块待实现 |
-| 阈值 | 由固定模型配置及独立样本验证后确定 | 不在开发前指定通用数值 |
-| 图像与视频读取 | OpenCV | 验证图片解码、视频及摄像头输入 |
-| 窗口展示 | 使用 Tkinter / Pillow，保留 headless OpenCV | 初始化与宋体字体检查已通过，视频窗口待实现 |
+| `matched` | 单脸且距离不大于阈值 | 提供昵称、人脸框和距离 |
+| `unknown` | 单脸且距离大于阈值 | 昵称为空，提供人脸框和距离 |
+| `no_face` | 未检测到脸 | 昵称、人脸框和距离均为空 |
+| `multiple_faces` | 检测到多张脸 | 昵称、人脸框和距离均为空 |
 
-截至 2026-11-12，已安装并验证 DeepFace `0.0.104` 发布包。下方源码引用固定到上游提交 `ce9ad19055c5671258f20a0abb07bd2ca86f5f42`，接口以本地固定发布包的验证结果为准。[发布信息](https://pypi.org/project/deepface/0.0.104/)
+四种正常结果都带有本次阈值和识别耗时，退出码为 `0`；参数或运行错误使用非零退出码。注册摘要、图片结果及 doctor 报告输出 JSON；业务命令的设备证据输出到标准错误。
 
-上游 `represent` 接口支持 BGR 数组输入和人脸特征输出；具体检测、对齐与归一化参数以固定版本为准。[DeepFace 接口源码](https://github.com/serengil/deepface/blob/ce9ad19055c5671258f20a0abb07bd2ca86f5f42/deepface/DeepFace.py)
+## 匹配与设备规则
 
-初步评估过 ONNX 路线；发布包声明了 CPU ONNX Runtime 依赖，因此本基线选择其原生 PyTorch 后端进行 GPU 推理，现有 ONNX Runtime 仅保留为上游发布依赖。Facenet512 的 PyTorch 实现支持加载预训练权重和设备迁移。[模型源码](https://github.com/serengil/deepface/blob/ce9ad19055c5671258f20a0abb07bd2ca86f5f42/deepface/models/facial_recognition/pytorch/Facenet.py)
+查询向量与每个注册向量计算余弦距离，取最小值。距离越小越相似，`distance <= threshold` 时匹配，距离不是身份概率。阈值须为 `[0, 2]` 内的有限数值，并通过独立样本确定。
 
-当前采用官方 CUDA 12.4 构建的 PyTorch 2.6.0，GTX 1060 上已经验证；4070 移动版到机后独立验收。[PyTorch 官方版本安装说明](https://pytorch.org/get-started/previous-versions/)
+识别先校验输入、向量维数和数值，再进行比对。归一化采用数值稳定方式处理极端有限分量，仅截断浮点误差造成的余弦越界。
 
-## 最小模块划分
+- `cpu`：明确选择 CPU。
+- `cuda`：明确要求 GPU；不可用或模型无法在 GPU 执行时报错。
+- `auto`：优先可验证的 CUDA，失败时说明原因并回退 CPU。
 
-| 模块 | 职责 | 负责人 |
-| --- | --- | --- |
-| `contracts.py` | 共享数据类型与校验约定 | 主聊天 |
-| `engine.py` | 配置运行设备，加载模型，统一提取特征 | 主聊天先完成 |
-| `enrollment.py` | 注册库建立、校验、保存与读取 | 注册任务 |
-| `recognition.py` | 特征距离计算与单帧识别 | 识别任务 |
-| `camera.py` | 视频源读取、单帧调用、窗口展示与资源释放 | 视频任务 |
-| `__main__.py` | 参数解析与模块串联 | 主聊天 |
+同一进程初始化后，切换设备需要启动新进程。GPU 证据包含网络参数、前向输入和输出的实际设备，不能只根据显卡存在判断成功。
 
-复用 DeepFace 的模型缓存，模型在进程中预热并重复使用。每次查询只提取查询帧的特征，注册特征启动时读取一次。
+视频逐帧同步识别，处理当前帧期间退出事件可能需等待。旧画面与旧状态一同保留至新结果就绪。所有退出路径释放视频源并关闭窗口；无可靠帧数元数据时，播放后返回读取失败无法可靠区分正常结尾与解码中断。
 
-## 共享数据类型
+## 协作约定
 
-采用 `contracts.py` 中已有的普通数据类；持久化时转换为 JSON。以下字段是各模块的共同约定。
-
-### `PipelineConfig`
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `model_name` | `str` | 特征模型名称 |
-| `detector_backend` | `str` | 人脸检测器 |
-| `align` | `bool` | 是否对齐 |
-| `normalization` | `str` | 输入归一化配置 |
-| `backend_engine` | `str` | 推理引擎标识 |
-| `distance_metric` | `str` | 第一版固定为 `cosine` |
-
-CPU/GPU 选择单独作为进程运行参数，不改变模型配置。变更模型、权重或特征处理方式后重新注册；跨引擎复用特征需先验证一致性。
-
-第一版构造配置时只接受表中固定的模型组合，避免任务各自切换模型。引擎校验 `facenet512_weights.pth` 的官方 SHA-256；更换权重需要更新共享基线并重新注册。
-
-### `FaceEmbedding`
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `embedding` | `list[float]` | 有限数值组成的非零特征向量 |
-| `bbox` | `tuple[int, int, int, int]` | 原始输入帧坐标中的 `x, y, w, h` |
-
-### `Gallery`
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `schema_version` | `int` | 第一版固定为 `1` |
-| `identity` | `str` | 非空登记昵称，例如 `WuL0og` |
-| `pipeline` | `PipelineConfig` | 提取这些特征时的配置 |
-| `embedding_dim` | `int` | 从模型实际输出确定的正整数维数 |
-| `embeddings` | `list[list[float]]` | 至少一个向量，长度均等于 `embedding_dim` |
-
-JSON 文件采用 UTF-8。保存前完整校验，写入同目录临时文件后替换目标文件；第一版每个库只允许一个注册进程写入。加载时校验结构、版本、向量维数、数值有效性和配置兼容性。
-
-### `RecognitionResult`
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `status` | `str` | `matched`、`unknown`、`no_face`、`multiple_faces` 之一 |
-| `identity` | `str \| None` | 仅 `matched` 时为登记昵称 |
-| `bbox` | `tuple[int, int, int, int] \| None` | 恰好一张脸时提供，其他情况为 `None` |
-| `distance` | `float \| None` | 单脸时提供最小余弦距离，其他情况为 `None` |
-| `threshold` | `float` | 本次使用的阈值 |
-| `elapsed_ms` | `float` | 单帧完整识别耗时，不包含首次模型加载 |
-
-## 函数接口约定
-
-类型定义和引擎接口已实现；注册、加载、识别与视频函数由后续任务实现。任务 agent 使用 `contracts.py` 中的定义，不各自复制。调用特征提取前先调用 `configure_runtime`；图片解码可复用 `engine.read_image(Path)`。
-
-```python
-# engine.py：在导入并初始化推理引擎前选择设备，返回诊断信息。
-def configure_runtime(device: str) -> dict: ...
-
-# engine.py：输入为非空的 uint8、H×W×3 BGR 数组；无脸返回空列表。
-def extract_embeddings(
-    frame_bgr, *, pipeline: PipelineConfig
-) -> list[FaceEmbedding]: ...
-
-# enrollment.py：读取文件夹内的图片，完整成功后才保存并返回特征库。
-def enroll(
-    identity: str,
-    images_dir: Path,
-    gallery_path: Path,
-    *,
-    pipeline: PipelineConfig,
-) -> Gallery: ...
-
-# enrollment.py：严格校验并加载现有特征库。
-def load_gallery(gallery_path: Path) -> Gallery: ...
-
-# recognition.py：不读取或改写特征库文件，只处理当前帧。
-def recognize(
-    frame_bgr, gallery: Gallery, *, threshold: float
-) -> RecognitionResult: ...
-
-# camera.py：source 为摄像头整数索引或视频 Path，按帧调用识别函数。
-def run_stream(
-    source: int | Path, gallery: Gallery, *, threshold: float
-) -> None: ...
-```
-
-图片路径在入口层解码为 BGR 数组。引擎保持检测启用，将明确的无脸结果映射为空列表；其他异常继续上抛，不能通过关闭检测把整幅图片当成人脸。
-
-### 匹配规则
-
-对于查询向量 `q` 和每个注册向量 `g`：
-
-```text
-d(q, g) = 1 - dot(q, g) / (norm(q) × norm(g))
-d_min = 所有注册向量距离的最小值
-d_min <= threshold 时匹配，否则为未知
-```
-
-阈值必须是 `[0, 2]` 内的有限数值。校验维数、非零范数和有限数值，浮点误差导致的余弦值越界仅按数值误差截断。阈值依据该匹配规则验证，多参考照片时重新检查误识表现。
-
-## 设备和视频状态
-
-- `cpu`：明确选择 CPU；`cuda`：显式要求 GPU；`auto`：优先可验证的 CUDA，失败时说明原因并使用 CPU。
-- 设备初始化发生在模型第一次加载前；切换设备使用新进程，避免模型缓存继续使用旧设备。
-- CUDA 验证以真实特征提取为准，保留网络参数、前向输入和输出张量的执行设备证据；算子分析结果可作为补充，显卡利用率仅是辅助信息。
-- 视频第一版使用同步循环，先保证正确。若采样跳过推理，画面应显示“待识别”或上次结果的时间，不能把旧结果标成当前帧的新判断。
-- 缩放或镜像用于展示时同步变换人脸框坐标；第一版可以直接使用原始帧，减少坐标变换。
-- OpenCV 负责视频源操作，视频模块在异常和退出时都应释放设备，并关闭所选展示组件的窗口。[VideoCapture 官方文档](https://docs.opencv.org/4.x/d8/dfe/classcv_1_1VideoCapture.html)
-
-## 命令行设计
-
-当前帮助、版本与 `doctor` 可运行；其余子命令为后续验收目标。
-
-| 子命令 | 必要参数 | 行为 |
-| --- | --- | --- |
-| `doctor` | `--device auto/cpu/cuda`，可选 `--image`、`--report` | 已实现：真实网络预热，可增加真实图片检查并保存报告 |
-| `enroll` | `--name`、`--images`、`--gallery`、`--device` | 创建或替换本人特征库 |
-| `recognize` | `--image`、`--gallery`、`--threshold`、`--device` | 输出单图识别结果 |
-| `stream` | `--camera` 或 `--video` 二选一，另需 `--gallery`、`--threshold`、`--device` | 视频或摄像头识别 |
-
-`--device` 默认 `auto`；阈值第一版显式传入，在共享基线实测后再决定是否增加已验证默认值。路径相对于调用命令时的工作目录解释。
-
-识别的四种正常状态退出码均为 `0`；无效参数、注册失败、模型故障和设备故障使用非零退出码及中文说明。错误路径不得覆盖已有特征库。
+- 先明确任务范围与共同提交，再为每个任务创建独立分支和 worktree；开始前核对目录、分支、基线与 Git 状态。
+- 为任务约定文件归属，公共接口、依赖和命令入口由集成负责人协调；需要跨范围修改时先说明原因。
+- 每个 worktree 使用自己的虚拟环境；可用 `DEEPFACE_HOME` 指向已校验的共享权重缓存，可写注册库和报告分别保存。
+- worktree 隔离文件，GPU 及显存仍共享；当前 3GB 显存机器的真实 GPU 检查串行安排，普通测试可并行。
+- 各任务检查通过并提交后，由集成负责人逐项审查、合并和验证，最后更新主分支。提交说明使用中文，身份沿用仓库本地配置。
+- 已完成任务的分支与 worktree 在确认无未保存内容后再清理；应用管理的 worktree 使用对应归档工具管理。
