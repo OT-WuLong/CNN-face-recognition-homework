@@ -1,0 +1,32 @@
+# Python 缓存、虚拟环境与构建产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 本地环境与编辑器配置
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 数据集与实验生成的文件
+/data/*
+!/data/.gitkeep
+/artifacts/
+*.pt
+*.pth
+*.onnx
+*.h5
+*.keras
+*.ckpt
