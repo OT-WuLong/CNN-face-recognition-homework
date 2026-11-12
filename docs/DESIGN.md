@@ -1,6 +1,6 @@
 # 技术与接口设计
 
-状态：开发前设计，本文中的模块、接口和子命令尚未实现。开始任务 worktree 前，由主聊天完成最小依赖验证并提交共享代码；接口变化先修改本文，再同步相关任务。
+状态：共享基线已实现 `contracts.py`、`engine.py` 和 `doctor` 命令，当前开发机已通过 CPU/CUDA 图片推理。注册、识别与视频接口仍是后续任务约定；接口变化先修改本文，再同步相关任务。
 
 ## 识别流程
 
@@ -19,22 +19,22 @@ DeepFace 提供特征提取能力；本项目维护注册库、匹配规则、�
 | 项目 | 当前设计 | 确定方式 |
 | --- | --- | --- |
 | Python | 优先使用现有 Python 3.12 | 在两台电脑分别验证依赖 |
-| 特征模型 | 首选候选 `Facenet512` | 本地样本推理通过后固定，当前未下载权重 |
-| 检测与对齐 | 候选 `opencv`，开启对齐 | 验证无脸、多脸和本人样本 |
-| 输入归一化 | 候选 `base`，交由 DeepFace 执行 | 与最终模型组合一起验证和固定 |
-| 推理引擎 | 优先验证 ONNX Runtime 路线 | 确认安装版本实际支持的 DeepFace 接口与权重 |
-| 距离 | 余弦距离，数值越小越相似 | 确定后保持注册与查询约定一致 |
+| 特征模型 | 固定 `Facenet512`，输出 512 维 | 当前 CPU/CUDA 推理已验证，权重摘要由引擎校验 |
+| 检测与对齐 | 固定 `opencv`，开启对齐 | 真实样本检测已验证，本人样本待采集 |
+| 输入归一化 | 固定 `base`，交由 DeepFace 执行 | 注册与查询使用同一配置 |
+| 推理引擎 | 固定 PyTorch 2.6.0 / CUDA 12.4 构建 | CPU/CUDA 均已实际运行 |
+| 距离 | 固定余弦距离，数值越小越相似 | 匹配模块待实现 |
 | 阈值 | 由固定模型配置及独立样本验证后确定 | 不在开发前指定通用数值 |
 | 图像与视频读取 | OpenCV | 验证图片解码、视频及摄像头输入 |
-| 窗口展示 | M1 根据 headless 依赖约束确定 | 单独验证窗口和中文文字显示，不默认可调用 `cv2.imshow` |
+| 窗口展示 | 使用 Tkinter / Pillow，保留 headless OpenCV | 初始化与宋体字体检查已通过，视频窗口待实现 |
 
-截至 2026-11-12，PyPI 查询到的 DeepFace 发布版本为 `0.0.104`，仅作为候选记录，尚未安装验证。下方源码引用固定到上游提交 `ce9ad19055c5671258f20a0abb07bd2ca86f5f42`，源码快照与实际安装包的行为需要分别核对。[发布信息](https://pypi.org/project/deepface/0.0.104/)
+截至 2026-11-12，已安装并验证 DeepFace `0.0.104` 发布包。下方源码引用固定到上游提交 `ce9ad19055c5671258f20a0abb07bd2ca86f5f42`，接口以本地固定发布包的验证结果为准。[发布信息](https://pypi.org/project/deepface/0.0.104/)
 
 上游 `represent` 接口支持 BGR 数组输入和人脸特征输出；具体检测、对齐与归一化参数以固定版本为准。[DeepFace 接口源码](https://github.com/serengil/deepface/blob/ce9ad19055c5671258f20a0abb07bd2ca86f5f42/deepface/DeepFace.py)
 
-上游 ONNX 会话支持按 CUDA、CPU 顺序选择执行后端，配置涉及 `DEEPFACE_ONNX_PROVIDERS`；应用还需验证实际模型执行，不能只根据显卡存在或后端名称判断加速成功。[ONNX 适配源码](https://github.com/serengil/deepface/blob/ce9ad19055c5671258f20a0abb07bd2ca86f5f42/deepface/commons/onnx_utils.py)
+初步评估过 ONNX 路线；发布包声明了 CPU ONNX Runtime 依赖，因此本基线选择其原生 PyTorch 后端进行 GPU 推理，现有 ONNX Runtime 仅保留为上游发布依赖。Facenet512 的 PyTorch 实现支持加载预训练权重和设备迁移。[模型源码](https://github.com/serengil/deepface/blob/ce9ad19055c5671258f20a0abb07bd2ca86f5f42/deepface/models/facial_recognition/pytorch/Facenet.py)
 
-GPU 包需要匹配驱动及 CUDA、cuDNN 运行环境。GTX 1060 和 RTX 4070 移动版分别测试，版本在验证后记录，不直接照搬最新安装命令。[ONNX Runtime 兼容性说明](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
+当前采用官方 CUDA 12.4 构建的 PyTorch 2.6.0，GTX 1060 上已经验证；4070 移动版到机后独立验收。[PyTorch 官方版本安装说明](https://pytorch.org/get-started/previous-versions/)
 
 ## 最小模块划分
 
@@ -51,7 +51,7 @@ GPU 包需要匹配驱动及 CUDA、cuDNN 运行环境。GTX 1060 和 RTX 4070 �
 
 ## 共享数据类型
 
-采用普通数据类；持久化时转换为 JSON。以下字段是各模块的共同约定，不是当前已有代码。
+采用 `contracts.py` 中已有的普通数据类；持久化时转换为 JSON。以下字段是各模块的共同约定。
 
 ### `PipelineConfig`
 
@@ -65,6 +65,8 @@ GPU 包需要匹配驱动及 CUDA、cuDNN 运行环境。GTX 1060 和 RTX 4070 �
 | `distance_metric` | `str` | 第一版固定为 `cosine` |
 
 CPU/GPU 选择单独作为进程运行参数，不改变模型配置。变更模型、权重或特征处理方式后重新注册；跨引擎复用特征需先验证一致性。
+
+第一版构造配置时只接受表中固定的模型组合，避免任务各自切换模型。引擎校验 `facenet512_weights.pth` 的官方 SHA-256；更换权重需要更新共享基线并重新注册。
 
 ### `FaceEmbedding`
 
@@ -98,7 +100,7 @@ JSON 文件采用 UTF-8。保存前完整校验，写入同目录临时文件后
 
 ## 函数接口约定
 
-以下签名是计划中的公共接口；类型定义由主聊天放入 `contracts.py`，任务 agent 使用这些定义，不各自复制。
+类型定义和引擎接口已实现；注册、加载、识别与视频函数由后续任务实现。任务 agent 使用 `contracts.py` 中的定义，不各自复制。调用特征提取前先调用 `configure_runtime`；图片解码可复用 `engine.read_image(Path)`。
 
 ```python
 # engine.py：在导入并初始化推理引擎前选择设备，返回诊断信息。
@@ -150,18 +152,18 @@ d_min <= threshold 时匹配，否则为未知
 
 - `cpu`：明确选择 CPU；`cuda`：显式要求 GPU；`auto`：优先可验证的 CUDA，失败时说明原因并使用 CPU。
 - 设备初始化发生在模型第一次加载前；切换设备使用新进程，避免模型缓存继续使用旧设备。
-- CUDA 验证以真实特征提取为准，保留会话及算子执行证据；初始化名称和显卡利用率仅是辅助信息。
+- CUDA 验证以真实特征提取为准，保留网络参数、前向输入和输出张量的执行设备证据；算子分析结果可作为补充，显卡利用率仅是辅助信息。
 - 视频第一版使用同步循环，先保证正确。若采样跳过推理，画面应显示“待识别”或上次结果的时间，不能把旧结果标成当前帧的新判断。
 - 缩放或镜像用于展示时同步变换人脸框坐标；第一版可以直接使用原始帧，减少坐标变换。
 - OpenCV 负责视频源操作，视频模块在异常和退出时都应释放设备，并关闭所选展示组件的窗口。[VideoCapture 官方文档](https://docs.opencv.org/4.x/d8/dfe/classcv_1_1VideoCapture.html)
 
 ## 命令行设计
 
-当前只有 `--help`、`--version` 可运行，下表是后续验收目标。
+当前帮助、版本与 `doctor` 可运行；其余子命令为后续验收目标。
 
 | 子命令 | 必要参数 | 行为 |
 | --- | --- | --- |
-| `doctor` | `--device auto/cpu/cuda` | 检查环境并运行真实模型预热，记录设备与版本 |
+| `doctor` | `--device auto/cpu/cuda`，可选 `--image`、`--report` | 已实现：真实网络预热，可增加真实图片检查并保存报告 |
 | `enroll` | `--name`、`--images`、`--gallery`、`--device` | 创建或替换本人特征库 |
 | `recognize` | `--image`、`--gallery`、`--threshold`、`--device` | 输出单图识别结果 |
 | `stream` | `--camera` 或 `--video` 二选一，另需 `--gallery`、`--threshold`、`--device` | 视频或摄像头识别 |

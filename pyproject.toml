@@ -5,10 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cnn-face-course"
 version = "0.1.0"
-description = "Course project: build and train a CNN for face recognition."
+description = "基于预训练 CNN 的本人人脸识别课程设计。"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "deepface==0.0.104",
+    "numpy==1.26.4",
+    "onnxruntime==1.20.1",
+    "opencv-contrib-python-headless==4.10.0.84",
+    "Pillow==13.0.0",
+    "torch==2.6.0",
+]
 
 [project.scripts]
 cnn-face = "cnn_face.__main__:main"
